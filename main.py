@@ -29,6 +29,40 @@ def get_sheets_client():
         logger.error(f"❌ Error initializing sheets client: {e}")
         return None
 
+def get_current_and_next_expiry(expiry_dates):
+    """Get current and next expiry dates from a list of expiry dates"""
+    try:
+        # Convert to dates and sort
+        unique_expiries = sorted(set(expiry_dates))
+        current_date = datetime.date.today()
+        
+        # Find current expiry (today or next date >= today)
+        current_expiry = None
+        next_expiry = None
+        
+        for expiry in unique_expiries:
+            if expiry >= current_date:
+                if current_expiry is None:
+                    current_expiry = expiry
+                elif next_expiry is None and expiry > current_expiry:
+                    next_expiry = expiry
+                    break
+        
+        # If no current expiry found, use the last available expiry
+        if current_expiry is None and unique_expiries:
+            current_expiry = unique_expiries[-1]
+            
+        result = [current_expiry] if current_expiry else []
+        if next_expiry:
+            result.append(next_expiry)
+            
+        logger.info(f"🗓️ Current expiry: {current_expiry}, Next expiry: {next_expiry}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error determining current/next expiry: {e}")
+        return []
+
 def fetch_eth_options_data():
     """Fetch ETH options data using India Delta Exchange API"""
     try:
@@ -52,16 +86,41 @@ def fetch_eth_options_data():
             logger.warning("⚠️ No ETH options found in API response")
             return pd.DataFrame()
 
-        # Process ETH options
-        eth_options = []
+        # First pass: collect all expiry dates to determine current/next
+        all_expiry_dates = []
         current_time = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
         
+        for ticker in tickers:
+            try:
+                symbol = ticker.get('symbol', '')
+                symbol_parts = symbol.split('-')
+                if len(symbol_parts) >= 4:
+                    expiry_str = symbol_parts[-1]
+                    if len(expiry_str) == 6:
+                        day = int(expiry_str[:2])
+                        month = int(expiry_str[2:4])
+                        year = 2000 + int(expiry_str[4:6])
+                        expiry_date = datetime.date(year, month, day)
+                        all_expiry_dates.append(expiry_date)
+            except:
+                continue
+        
+        # Get current and next expiry dates
+        target_expiries = get_current_and_next_expiry(all_expiry_dates)
+        if not target_expiries:
+            logger.warning("⚠️ No valid expiry dates found")
+            return pd.DataFrame()
+        
+        logger.info(f"🎯 Filtering for expiries: {target_expiries}")
+
+        # Second pass: process only current and next expiry options
+        eth_options = []
         successful_parses = 0
         failed_parses = 0
 
         for ticker in tickers:
             try:
-                # Get required fields based on India Delta Exchange API response
+                # Get required fields
                 symbol = ticker.get('symbol', '')
                 strike_price = ticker.get('strike_price')
                 contract_type = ticker.get('contract_type', '')
@@ -75,21 +134,24 @@ def fetch_eth_options_data():
                 strike = float(strike_price)
                 future_price = float(spot_price)
                 
-                # Parse expiry date from symbol (P-ETH-4820-240825 -> 240825 = 24 Aug 2025)
+                # Parse expiry date from symbol
                 symbol_parts = symbol.split('-')
                 if len(symbol_parts) < 4:
                     failed_parses += 1
                     continue
                 
-                expiry_str = symbol_parts[-1]  # e.g., "240825"
+                expiry_str = symbol_parts[-1]
                 if len(expiry_str) == 6:
-                    # Parse DDMMYY format - where YY is 20XX
-                    day = int(expiry_str[:2])    # 24
-                    month = int(expiry_str[2:4]) # 08  
-                    year = 2000 + int(expiry_str[4:6])  # 2025
+                    day = int(expiry_str[:2])
+                    month = int(expiry_str[2:4])
+                    year = 2000 + int(expiry_str[4:6])
                     expiry_date = datetime.date(year, month, day)
                 else:
                     failed_parses += 1
+                    continue
+                
+                # Filter: Only include current and next expiry
+                if expiry_date not in target_expiries:
                     continue
                 
                 # Determine option type
@@ -102,15 +164,15 @@ def fetch_eth_options_data():
                 option_data = {
                     'SYMBOL': symbol,
                     'Date': current_time.strftime('%Y-%m-%d'),
-                    'Time': current_time.strftime('%H:%M:%S'),  # Readable time format
-                    'Future_Price': future_price,                # Using spot_price from API
+                    'Time': current_time.strftime('%H:%M:%S'),
+                    'Future_Price': future_price,
                     'Expiry_Date': expiry_date.strftime('%Y-%m-%d'),
                     'Strike': strike,
                     'Option_Type': option_type,
                     'Close': mark_price,
                     'OI': oi_contracts,
-                    'Open': '',           # Will be filled from previous data
-                    'OI_Change': ''       # Will be calculated later
+                    'Open': '',
+                    'OI_Change': ''
                 }
 
                 eth_options.append(option_data)
@@ -118,8 +180,7 @@ def fetch_eth_options_data():
 
                 # Log first few successful parses
                 if successful_parses <= 5:
-                    logger.info(f"✅ Parsed #{successful_parses}: {symbol}")
-                    logger.info(f"   Strike: {strike}, Future Price: {future_price}, Close: {mark_price}, OI: {oi_contracts}")
+                    logger.info(f"✅ Parsed #{successful_parses}: {symbol} (Expiry: {expiry_date})")
 
             except Exception as e:
                 failed_parses += 1
@@ -135,8 +196,15 @@ def fetch_eth_options_data():
         df = pd.DataFrame(eth_options)
         df_unique = df.drop_duplicates(subset=['SYMBOL'], keep='last')
         
-        logger.info(f"📋 Final dataset: {len(df_unique)} unique ETH options")
-        return df_unique
+        # Sort by Expiry Date, Time, and Symbol
+        df_sorted = df_unique.sort_values(
+            by=['Expiry_Date', 'Time', 'SYMBOL'], 
+            ascending=[True, True, True]
+        )[74][75]
+        
+        logger.info(f"📋 Final dataset: {len(df_sorted)} ETH options (current + next expiry only)")
+        logger.info(f"📅 Expiries included: {sorted(df_sorted['Expiry_Date'].unique())}")
+        return df_sorted
 
     except Exception as e:
         logger.error(f"❌ Error fetching ETH options data: {e}")
@@ -152,7 +220,7 @@ def get_previous_data(worksheet):
             return pd.DataFrame()
         
         df = pd.DataFrame(all_records)
-        return df.tail(300)  # Get last 300 records for comparison
+        return df.tail(300)
         
     except Exception as e:
         logger.error(f"Error getting previous data: {e}")
@@ -181,15 +249,21 @@ def calculate_open_and_oi_change(current_df, previous_df):
     merged['Open'] = merged['Close_prev'].fillna('')
     merged['OI_Change'] = (merged['OI'] - merged['OI_prev'].fillna(merged['OI'])).fillna('')
     
-    # Set empty values for new symbols (no previous data)
+    # Fix pandas warning by using None instead of empty string for numeric columns
     merged.loc[merged['Close_prev'].isna(), 'Open'] = ''
-    merged.loc[merged['OI_prev'].isna(), 'OI_Change'] = ''
+    merged.loc[merged['OI_prev'].isna(), 'OI_Change'] = None
     
     # Keep columns in exact order matching your Google Sheets
     columns_order = ['SYMBOL', 'Date', 'Time', 'Future_Price', 'Expiry_Date', 
                     'Strike', 'Option_Type', 'Close', 'OI', 'Open', 'OI_Change']
     
-    return merged[columns_order]
+    # Final sort by Expiry Date, Time, and Symbol
+    final_df = merged[columns_order].sort_values(
+        by=['Expiry_Date', 'Time', 'SYMBOL'], 
+        ascending=[True, True, True]
+    )
+    
+    return final_df
 
 def append_to_sheets(df, worksheet):
     """Append data to Google Sheets"""
@@ -209,7 +283,7 @@ def append_to_sheets(df, worksheet):
 
 def main():
     """Main data collection function"""
-    logger.info("🚀 Starting ETH Options Data Collection - FINAL VERSION")
+    logger.info("🚀 Starting ETH Options Data Collection - FILTERED & SORTED VERSION")
     
     client = get_sheets_client()
     if not client:
@@ -220,7 +294,7 @@ def main():
         sheet = client.open_by_key(SPREADSHEET_ID)
         worksheet = sheet.sheet1
 
-        # Fetch ETH options data from India Delta Exchange
+        # Fetch ETH options data (current + next expiry only)
         current_df = fetch_eth_options_data()
         
         if current_df.empty:
@@ -230,22 +304,20 @@ def main():
         # Get previous data for Open and OI_Change calculations
         previous_df = get_previous_data(worksheet)
         
-        # Calculate Open (previous close) and OI_Change
+        # Calculate Open and OI_Change, then sort
         final_df = calculate_open_and_oi_change(current_df, previous_df)
         
         # Log final data summary
         logger.info(f"📊 Final data summary:")
         logger.info(f"   Rows: {len(final_df)}")
-        logger.info(f"   Columns: {list(final_df.columns)}")
-        if not final_df.empty:
-            sample_row = final_df.iloc[0].to_dict()
-            logger.info(f"   Sample: {sample_row}")
+        logger.info(f"   Expiries: {sorted(final_df['Expiry_Date'].unique())}")
+        logger.info(f"   Sort order: Expiry Date → Time → Symbol")
         
         # Append to Google Sheets
         success = append_to_sheets(final_df, worksheet)
         
         if success:
-            logger.info(f"🎉 SUCCESS: Updated {len(final_df)} ETH options in Google Sheets")
+            logger.info(f"🎉 SUCCESS: Updated {len(final_df)} ETH options (current + next expiry)")
         else:
             logger.error("💀 FAILED: Could not update Google Sheets")
 
