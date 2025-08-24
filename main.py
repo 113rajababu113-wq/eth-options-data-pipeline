@@ -140,8 +140,14 @@ def fetch_eth_options_data():
         logger.info(f"Failed parses: {failed_parses}")
         
         df = pd.DataFrame(eth_options)
+
+        # Remove duplicates based on SYMBOL (keep latest data)
+        df_unique = df.drop_duplicates(subset=['SYMBOL'], keep='last')
+
         logger.info(f"Collected {len(df)} ETH options records")
-        return df
+        logger.info(f"After removing duplicates: {len(df_unique)} unique records")
+        return df_unique
+
         
     except Exception as e:
         logger.error(f"Error fetching data: {e}")
@@ -238,4 +244,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
