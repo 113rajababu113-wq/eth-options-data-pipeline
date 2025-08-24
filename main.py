@@ -30,12 +30,12 @@ def get_sheets_client():
         return None
 
 def fetch_eth_options_data():
-    """Fetch ETH options data using correct Delta Exchange API structure"""
+    """Fetch ETH options data using India Delta Exchange API"""
     try:
-        logger.info("📡 Fetching data from Delta Exchange API...")
+        logger.info("📡 Fetching ETH options from India Delta Exchange API...")
         
-        # Use the tickers endpoint with ETH options filter
-        url = "https://api.delta.exchange/v2/tickers"
+        # Use India Delta Exchange API endpoint with ETH options filter
+        url = "https://api.india.delta.exchange/v2/tickers"
         params = {
             'contract_types': 'call_options,put_options',
             'underlying_asset_symbols': 'ETH'
@@ -46,113 +46,71 @@ def fetch_eth_options_data():
         
         data = response.json()
         tickers = data.get('result', [])
-        logger.info(f"📈 Total tickers fetched with filters: {len(tickers)}")
+        logger.info(f"📊 Total ETH options fetched: {len(tickers)}")
 
-        # Also try without filters to debug
         if len(tickers) == 0:
-            logger.info("🔍 No results with filters, trying without filters...")
-            response_all = requests.get(url, timeout=30)
-            data_all = response_all.json()
-            all_tickers = data_all.get('result', [])
-            logger.info(f"📊 Total tickers without filters: {len(all_tickers)}")
-            
-            # Check what ETH-related tickers exist
-            eth_tickers = [t for t in all_tickers if 'ETH' in t.get('symbol', '')]
-            logger.info(f"🎯 ETH-related tickers found: {len(eth_tickers)}")
-            
-            if len(eth_tickers) > 0:
-                # Show first few ETH tickers for debugging
-                for i, ticker in enumerate(eth_tickers[:3]):
-                    symbol = ticker.get('symbol', '')
-                    contract_type = ticker.get('contract_type', '')
-                    logger.info(f"Sample ETH ticker {i+1}: {symbol} - Contract type: {contract_type}")
-            
-            # Use all tickers for processing
-            tickers = all_tickers
+            logger.warning("⚠️ No ETH options found in API response")
+            return pd.DataFrame()
 
-        # Get ETH spot price
-        eth_spot_price = 0
-        for ticker in tickers:
-            if ticker.get('symbol') == 'ETHUSD':
-                eth_spot_price = float(ticker.get('spot_price', 0) or ticker.get('mark_price', 0) or 0)
-                break
-        
-        logger.info(f"💰 ETH spot price: ${eth_spot_price}")
-
-        # Process ETH options data
+        # Process ETH options
         eth_options = []
         current_time = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
-        timestamp = int(current_time.timestamp())
         
         successful_parses = 0
         failed_parses = 0
 
         for ticker in tickers:
-            symbol = ticker.get('symbol', '')
-            contract_type = ticker.get('contract_type', '')
-            
-            # Debug: Check what we're filtering against
-            is_eth_related = 'ETH' in symbol
-            is_option = contract_type in ['call_options', 'put_options']
-            
-            # Alternative check for options based on symbol pattern
-            is_option_by_symbol = (symbol.startswith('C-ETH-') or symbol.startswith('P-ETH-'))
-            
-            # Use either contract_type OR symbol pattern
-            if not (is_eth_related and (is_option or is_option_by_symbol)):
-                continue
-            
             try:
-                # Get required fields
+                # Get required fields based on India Delta Exchange API response
+                symbol = ticker.get('symbol', '')
                 strike_price = ticker.get('strike_price')
-                if strike_price is None:
+                contract_type = ticker.get('contract_type', '')
+                spot_price = ticker.get('spot_price')
+                
+                # Skip if missing required fields
+                if not symbol or not strike_price or not contract_type or not spot_price:
                     failed_parses += 1
                     continue
                 
                 strike = float(strike_price)
+                future_price = float(spot_price)
                 
-                # Get expiry date
-                expiry_str = ticker.get('expiry_date') or ticker.get('settlement_time')
-                if not expiry_str:
+                # Parse expiry date from symbol (P-ETH-4820-240825 -> 240825 = 24 Aug 2025)
+                symbol_parts = symbol.split('-')
+                if len(symbol_parts) < 4:
                     failed_parses += 1
                     continue
                 
-                # Parse expiry date
-                if 'T' in expiry_str:
-                    expiry_date = datetime.datetime.fromisoformat(expiry_str.replace('Z', '+00:00')).date()
+                expiry_str = symbol_parts[-1]  # e.g., "240825"
+                if len(expiry_str) == 6:
+                    # Parse DDMMYY format - where YY is 20XX
+                    day = int(expiry_str[:2])    # 24
+                    month = int(expiry_str[2:4]) # 08  
+                    year = 2000 + int(expiry_str[4:6])  # 2025
+                    expiry_date = datetime.date(year, month, day)
                 else:
-                    expiry_date = datetime.datetime.strptime(expiry_str, '%Y-%m-%d').date()
+                    failed_parses += 1
+                    continue
                 
                 # Determine option type
-                if contract_type == 'call_options' or symbol.startswith('C-'):
-                    option_type = 'Call'
-                elif contract_type == 'put_options' or symbol.startswith('P-'):
-                    option_type = 'Put'
-                else:
-                    failed_parses += 1
-                    continue
+                option_type = 'Call' if contract_type == 'call_options' else 'Put'
                 
                 # Get pricing and OI data
-                mark_price = float(ticker.get('mark_price', 0) or 0)
-                
-                oi_contracts = ticker.get('oi', 0)
-                try:
-                    oi_contracts = int(float(str(oi_contracts))) if oi_contracts else 0
-                except:
-                    oi_contracts = 0
+                mark_price = float(ticker.get('mark_price', 0))
+                oi_contracts = int(ticker.get('oi_contracts', 0))
 
                 option_data = {
                     'SYMBOL': symbol,
                     'Date': current_time.strftime('%Y-%m-%d'),
-                    'Time': timestamp,
-                    'Future_Price': eth_spot_price,
+                    'Time': current_time.strftime('%H:%M:%S'),  # Readable time format
+                    'Future_Price': future_price,                # Using spot_price from API
                     'Expiry_Date': expiry_date.strftime('%Y-%m-%d'),
                     'Strike': strike,
                     'Option_Type': option_type,
                     'Close': mark_price,
                     'OI': oi_contracts,
-                    'Open': '',
-                    'OI_Change': ''
+                    'Open': '',           # Will be filled from previous data
+                    'OI_Change': ''       # Will be calculated later
                 }
 
                 eth_options.append(option_data)
@@ -160,12 +118,13 @@ def fetch_eth_options_data():
 
                 # Log first few successful parses
                 if successful_parses <= 5:
-                    logger.info(f"✅ Parsed #{successful_parses}: {symbol} - Strike:{strike}, Close:{mark_price}, OI:{oi_contracts}")
+                    logger.info(f"✅ Parsed #{successful_parses}: {symbol}")
+                    logger.info(f"   Strike: {strike}, Future Price: {future_price}, Close: {mark_price}, OI: {oi_contracts}")
 
             except Exception as e:
                 failed_parses += 1
                 if failed_parses <= 3:
-                    logger.warning(f"❌ Failed to parse {symbol}: {e}")
+                    logger.warning(f"❌ Failed to parse {ticker.get('symbol', 'unknown')}: {e}")
 
         logger.info(f"📊 Results: {successful_parses} successful, {failed_parses} failed")
 
@@ -193,7 +152,7 @@ def get_previous_data(worksheet):
             return pd.DataFrame()
         
         df = pd.DataFrame(all_records)
-        return df.tail(300)
+        return df.tail(300)  # Get last 300 records for comparison
         
     except Exception as e:
         logger.error(f"Error getting previous data: {e}")
@@ -206,11 +165,11 @@ def calculate_open_and_oi_change(current_df, previous_df):
         current_df['OI_Change'] = ''
         return current_df
 
-    # Convert to numeric
+    # Convert to numeric for calculations
     previous_df['Close'] = pd.to_numeric(previous_df['Close'], errors='coerce')
     previous_df['OI'] = pd.to_numeric(previous_df['OI'], errors='coerce')
     
-    # Merge with previous data
+    # Merge current data with previous data
     merged = current_df.merge(
         previous_df[['SYMBOL', 'Close', 'OI']],
         on='SYMBOL',
@@ -218,15 +177,15 @@ def calculate_open_and_oi_change(current_df, previous_df):
         suffixes=('', '_prev')
     )
     
-    # Calculate Open and OI_Change
+    # Calculate Open (previous Close price) and OI_Change
     merged['Open'] = merged['Close_prev'].fillna('')
     merged['OI_Change'] = (merged['OI'] - merged['OI_prev'].fillna(merged['OI'])).fillna('')
     
-    # Set empty for new symbols
+    # Set empty values for new symbols (no previous data)
     merged.loc[merged['Close_prev'].isna(), 'Open'] = ''
     merged.loc[merged['OI_prev'].isna(), 'OI_Change'] = ''
     
-    # Keep columns in the exact order of your Google Sheets
+    # Keep columns in exact order matching your Google Sheets
     columns_order = ['SYMBOL', 'Date', 'Time', 'Future_Price', 'Expiry_Date', 
                     'Strike', 'Option_Type', 'Close', 'OI', 'Open', 'OI_Change']
     
@@ -244,11 +203,13 @@ def append_to_sheets(df, worksheet):
         
     except Exception as e:
         logger.error(f"❌ Error appending to sheets: {e}")
+        import traceback
+        logger.error(f"Full error: {traceback.format_exc()}")
         return False
 
 def main():
     """Main data collection function"""
-    logger.info("🚀 Starting ETH Options Data Collection - FIXED VERSION")
+    logger.info("🚀 Starting ETH Options Data Collection - FINAL VERSION")
     
     client = get_sheets_client()
     if not client:
@@ -259,24 +220,32 @@ def main():
         sheet = client.open_by_key(SPREADSHEET_ID)
         worksheet = sheet.sheet1
 
-        # Fetch ETH options data
+        # Fetch ETH options data from India Delta Exchange
         current_df = fetch_eth_options_data()
         
         if current_df.empty:
             logger.warning("No ETH options data collected")
             return
 
-        # Get previous data for calculations
+        # Get previous data for Open and OI_Change calculations
         previous_df = get_previous_data(worksheet)
         
-        # Calculate Open and OI_Change
+        # Calculate Open (previous close) and OI_Change
         final_df = calculate_open_and_oi_change(current_df, previous_df)
+        
+        # Log final data summary
+        logger.info(f"📊 Final data summary:")
+        logger.info(f"   Rows: {len(final_df)}")
+        logger.info(f"   Columns: {list(final_df.columns)}")
+        if not final_df.empty:
+            sample_row = final_df.iloc[0].to_dict()
+            logger.info(f"   Sample: {sample_row}")
         
         # Append to Google Sheets
         success = append_to_sheets(final_df, worksheet)
         
         if success:
-            logger.info(f"🎉 SUCCESS: Updated {len(final_df)} ETH options")
+            logger.info(f"🎉 SUCCESS: Updated {len(final_df)} ETH options in Google Sheets")
         else:
             logger.error("💀 FAILED: Could not update Google Sheets")
 
