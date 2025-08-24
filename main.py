@@ -255,41 +255,68 @@ def get_previous_data(worksheet):
         return pd.DataFrame()
 
 def calculate_open_and_oi_change(current_df, previous_df):
-    """Calculate Open and OI_Change based on previous data - UPDATED TO USE 0"""
+    """Calculate Open and OI_Change based on previous data - FIXED to avoid row duplication"""
     if previous_df.empty:
-        current_df['Open'] = 0        # ← Updated: Use 0 instead of ''
-        current_df['OI_Change'] = 0   # ← Updated: Use 0 instead of ''
+        # No previous data - set Open and OI_Change to 0
+        current_df['Open'] = 0
+        current_df['OI_Change'] = 0
+        logger.info("🆕 No previous data found - setting Open and OI_Change to 0")
         return current_df
 
     # Convert to numeric for calculations
     previous_df['Close'] = pd.to_numeric(previous_df['Close'], errors='coerce')
     previous_df['OI'] = pd.to_numeric(previous_df['OI'], errors='coerce')
     
-    # Merge current data with previous data
-    merged = current_df.merge(
-        previous_df[['SYMBOL', 'Close', 'OI']],
-        on='SYMBOL',
-        how='left',
-        suffixes=('', '_prev')
-    )
+    # Create a lookup dictionary from previous data for faster processing
+    previous_lookup = {}
+    for _, row in previous_df.iterrows():
+        symbol = row['SYMBOL']
+        previous_lookup[symbol] = {
+            'Close': row['Close'] if pd.notnull(row['Close']) else 0,
+            'OI': row['OI'] if pd.notnull(row['OI']) else 0
+        }
     
-    # Calculate Open and OI_Change - use 0 for missing data
-    merged['Open'] = merged['Close_prev'].fillna(0)           # ← Updated: Use 0 instead of ''
-    merged['OI_Change'] = (merged['OI'] - merged['OI_prev'].fillna(merged['OI'])).fillna(0)  # ← Updated: Use 0 instead of ''
+    logger.info(f"📚 Created lookup for {len(previous_lookup)} previous symbols")
     
-    # Handle new symbols - set to 0 instead of empty/None
-    merged.loc[merged['Close_prev'].isna(), 'Open'] = 0       # ← Updated: Use 0 instead of ''
-    merged.loc[merged['OI_prev'].isna(), 'OI_Change'] = 0     # ← Updated: Use 0 instead of None
+    # Calculate Open and OI_Change for current data
+    open_values = []
+    oi_change_values = []
     
-    # Keep columns in exact order matching your Google Sheets
+    for _, row in current_df.iterrows():
+        symbol = row['SYMBOL']
+        current_oi = row['OI']
+        
+        if symbol in previous_lookup:
+            # Symbol exists in previous data
+            prev_close = previous_lookup[symbol]['Close']
+            prev_oi = previous_lookup[symbol]['OI']
+            
+            open_values.append(prev_close)
+            oi_change_values.append(current_oi - prev_oi)
+        else:
+            # New symbol - no previous data
+            open_values.append(0)
+            oi_change_values.append(0)
+    
+    # Assign calculated values to current dataframe
+    current_df['Open'] = open_values
+    current_df['OI_Change'] = oi_change_values
+    
+    # Ensure proper column order
     columns_order = ['SYMBOL', 'Date', 'Time', 'Future_Price', 'Expiry_Date', 
                     'Strike', 'Option_Type', 'Close', 'OI', 'Open', 'OI_Change']
     
     # Final sort by Expiry Date, Time, and Symbol
-    final_df = merged[columns_order].sort_values(
+    final_df = current_df[columns_order].sort_values(
         by=['Expiry_Date', 'Time', 'SYMBOL'], 
         ascending=[True, True, True]
-    )
+    ).reset_index(drop=True)
+    
+    # Log calculation summary
+    new_symbols = len(current_df) - len([s for s in current_df['SYMBOL'] if s in previous_lookup])
+    existing_symbols = len(current_df) - new_symbols
+    
+    logger.info(f"🔄 Calculated Open/OI_Change: {existing_symbols} existing, {new_symbols} new symbols")
     
     return final_df
 
@@ -316,7 +343,7 @@ def append_to_sheets(df, worksheet):
 
 def main():
     """Main data collection function"""
-    logger.info("🚀 Starting ETH Options Data Collection - FINAL VERSION WITH 0 FIXES")
+    logger.info("🚀 Starting ETH Options Data Collection - FIXED DUPLICATION & 0 VALUES")
     
     client = get_sheets_client()
     if not client:
@@ -327,20 +354,26 @@ def main():
         sheet = client.open_by_key(SPREADSHEET_ID)
         worksheet = sheet.sheet1
 
+        # Fetch current ETH options data
         current_df = fetch_eth_options_data()
         
         if current_df.empty:
             logger.warning("No ETH options data collected")
             return
 
+        # Get previous data for Open and OI_Change calculations
         previous_df = get_previous_data(worksheet)
+        
+        # Calculate Open and OI_Change - FIXED VERSION
         final_df = calculate_open_and_oi_change(current_df, previous_df)
         
+        # Log final data summary
         logger.info(f"📊 Final data summary:")
-        logger.info(f"   Rows: {len(final_df)}")
+        logger.info(f"   Rows: {len(final_df)} (FIXED - only current data)")
         logger.info(f"   Expiries: {sorted(final_df['Expiry_Date'].unique())}")
         logger.info(f"   Strike range: ${final_df['Strike'].min():.0f} to ${final_df['Strike'].max():.0f}")
         
+        # Append to Google Sheets
         success = append_to_sheets(final_df, worksheet)
         
         if success:
