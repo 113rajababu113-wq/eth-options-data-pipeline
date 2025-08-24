@@ -198,8 +198,8 @@ def fetch_eth_options_data():
                     'Option_Type': option_type,
                     'Close': mark_price,
                     'OI': oi_contracts,
-                    'Open': '',
-                    'OI_Change': ''
+                    'Open': 0,        # Initialize as 0
+                    'OI_Change': 0    # Initialize as 0
                 }
 
                 eth_options.append(option_data)
@@ -255,15 +255,17 @@ def get_previous_data(worksheet):
         return pd.DataFrame()
 
 def calculate_open_and_oi_change(current_df, previous_df):
-    """Calculate Open and OI_Change based on previous data"""
+    """Calculate Open and OI_Change based on previous data - UPDATED TO USE 0"""
     if previous_df.empty:
-        current_df['Open'] = ''
-        current_df['OI_Change'] = ''
+        current_df['Open'] = 0        # ← Updated: Use 0 instead of ''
+        current_df['OI_Change'] = 0   # ← Updated: Use 0 instead of ''
         return current_df
 
+    # Convert to numeric for calculations
     previous_df['Close'] = pd.to_numeric(previous_df['Close'], errors='coerce')
     previous_df['OI'] = pd.to_numeric(previous_df['OI'], errors='coerce')
     
+    # Merge current data with previous data
     merged = current_df.merge(
         previous_df[['SYMBOL', 'Close', 'OI']],
         on='SYMBOL',
@@ -271,15 +273,19 @@ def calculate_open_and_oi_change(current_df, previous_df):
         suffixes=('', '_prev')
     )
     
-    merged['Open'] = merged['Close_prev'].fillna('')
-    merged['OI_Change'] = (merged['OI'] - merged['OI_prev'].fillna(merged['OI'])).fillna('')
+    # Calculate Open and OI_Change - use 0 for missing data
+    merged['Open'] = merged['Close_prev'].fillna(0)           # ← Updated: Use 0 instead of ''
+    merged['OI_Change'] = (merged['OI'] - merged['OI_prev'].fillna(merged['OI'])).fillna(0)  # ← Updated: Use 0 instead of ''
     
-    merged.loc[merged['Close_prev'].isna(), 'Open'] = ''
-    merged.loc[merged['OI_prev'].isna(), 'OI_Change'] = None
+    # Handle new symbols - set to 0 instead of empty/None
+    merged.loc[merged['Close_prev'].isna(), 'Open'] = 0       # ← Updated: Use 0 instead of ''
+    merged.loc[merged['OI_prev'].isna(), 'OI_Change'] = 0     # ← Updated: Use 0 instead of None
     
+    # Keep columns in exact order matching your Google Sheets
     columns_order = ['SYMBOL', 'Date', 'Time', 'Future_Price', 'Expiry_Date', 
                     'Strike', 'Option_Type', 'Close', 'OI', 'Open', 'OI_Change']
     
+    # Final sort by Expiry Date, Time, and Symbol
     final_df = merged[columns_order].sort_values(
         by=['Expiry_Date', 'Time', 'SYMBOL'], 
         ascending=[True, True, True]
@@ -310,7 +316,7 @@ def append_to_sheets(df, worksheet):
 
 def main():
     """Main data collection function"""
-    logger.info("🚀 Starting ETH Options Data Collection - CLEANED & FILTERED VERSION")
+    logger.info("🚀 Starting ETH Options Data Collection - FINAL VERSION WITH 0 FIXES")
     
     client = get_sheets_client()
     if not client:
