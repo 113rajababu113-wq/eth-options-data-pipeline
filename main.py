@@ -68,7 +68,6 @@ def fetch_eth_options_data():
                         parts = symbol.split('-')
                         if len(parts) < 4:
                             failed_parses += 1
-                            logger.info(f"Symbol {symbol} has only {len(parts)} parts")
                             continue
                         strike = float(parts[2])
 
@@ -91,30 +90,27 @@ def fetch_eth_options_data():
                             expiry_date = datetime.datetime.strptime(expiry_str, '%d%m%y').date()
                         else:
                             failed_parses += 1
-                            logger.info(f"Invalid expiry format {expiry_str} in {symbol}")
                             continue
 
                     # Determine option type
                     option_type = 'Call' if symbol.startswith('C-') else 'Put'
 
-                    # Get pricing and OI data
+                    # Get pricing data
                     close_price = float(ticker.get('mark_price', 0) or 0)
-                    
-                    # FIXED: Use oi_contracts instead of oi for accurate contract count
-                    oi_value = ticker.get('oi_contracts', 0) or 0
+
+                    # FIXED: Use oi_contracts only for accurate contract count
+                    oi_contracts_val = ticker.get('oi_contracts', 0) or 0
                     try:
-                        open_interest = int(float(str(oi_value))) if oi_value else 0
+                        open_interest = int(float(str(oi_contracts_val))) if oi_contracts_val else 0
                     except (ValueError, TypeError):
                         open_interest = 0
 
-                    # FIXED: Use API timestamp instead of system time for accurate timing
+                    # FIXED: Use API timestamp instead of system time
                     if ticker.get('time'):
                         api_time = datetime.datetime.fromisoformat(ticker['time'].replace('Z', '+00:00'))
-                        ist_time = api_time + datetime.timedelta(hours=5, minutes=30)
-                        date_str = ist_time.strftime('%Y-%m-%d')
-                        time_str = ist_time.strftime('%H:%M:%S')
+                        date_str = (api_time + datetime.timedelta(hours=5, minutes=30)).strftime('%Y-%m-%d')
+                        time_str = (api_time + datetime.timedelta(hours=5, minutes=30)).strftime('%H:%M:%S')
                     else:
-                        # Fallback to system time
                         date_str = current_time.strftime('%Y-%m-%d')
                         time_str = current_time.strftime('%H:%M:%S')
 
@@ -151,18 +147,15 @@ def fetch_eth_options_data():
         df = pd.DataFrame(eth_options)
 
         # FIXED: Enhanced duplicate removal using multiple columns
-        df_unique = df.drop_duplicates(subset=['SYMBOL', 'Date', 'Time'], keep='last')
+        df_unique = df.drop_duplicates(subset=['SYMBOL', 'Date', 'Time', 'Strike', 'Option_Type'], keep='last')
 
         # NEW: Sort by Expiry Date, Time, and Symbol for organized data
-        df_unique_sorted = df_unique.sort_values(
-            by=['Expiry_Date', 'Time', 'SYMBOL'], 
-            ascending=[True, True, True]
-        )
+        df_sorted = df_unique.sort_values(by=['Expiry_Date', 'Time', 'SYMBOL'], ascending=[True, True, True])
 
         logger.info(f"Collected {len(df)} ETH options records")
-        logger.info(f"After removing duplicates and sorting: {len(df_unique_sorted)} unique records")
+        logger.info(f"After removing duplicates and sorting: {len(df_sorted)} unique records")
 
-        return df_unique_sorted
+        return df_sorted
 
     except Exception as e:
         logger.error(f"Error fetching data: {e}")
@@ -176,10 +169,8 @@ def get_previous_data(worksheet):
         all_records = worksheet.get_all_records()
         if not all_records:
             return pd.DataFrame()
-
         df = pd.DataFrame(all_records)
         return df.tail(300)  # Get last 300 records for comparison
-
     except Exception as e:
         logger.error(f"Error getting previous data: {e}")
         return pd.DataFrame()
@@ -242,7 +233,6 @@ def main():
 
         # Fetch current ETH options data
         current_df = fetch_eth_options_data()
-
         if current_df.empty:
             logger.warning("No data collected")
             return
@@ -255,7 +245,6 @@ def main():
 
         # Append to Google Sheets
         success = append_to_sheets(final_df, worksheet)
-
         if success:
             logger.info(f"✅ Successfully collected and updated {len(final_df)} rows")
         else:
