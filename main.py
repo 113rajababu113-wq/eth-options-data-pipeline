@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 SPREADSHEET_ID = '1YVJKTo8PDKLFqp7azkY1XhqizFRxY0GZB4RvSQe7KEA'
-SERVICE_ACCOUNT_FILE = '/home/rajababu113/eth-options-key.json'
+SERVICE_ACCOUNT_FILE = 'eth-options-key.json'
 
 def get_sheets_client():
     """Initialize Google Sheets client"""
@@ -238,3 +238,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
