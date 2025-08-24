@@ -63,6 +63,12 @@ def get_current_and_next_expiry(expiry_dates):
         logger.error(f"Error determining current/next expiry: {e}")
         return []
 
+def filter_strikes_by_percentage(future_price, strike_price, percentage=7):
+    """Check if strike is within ±percentage of future price"""
+    lower_bound = future_price * (1 - percentage / 100)
+    upper_bound = future_price * (1 + percentage / 100)
+    return lower_bound <= strike_price <= upper_bound
+
 def fetch_eth_options_data():
     """Fetch ETH options data using India Delta Exchange API"""
     try:
@@ -90,6 +96,20 @@ def fetch_eth_options_data():
         all_expiry_dates = []
         current_time = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
         
+        # Get ETH spot price for strike filtering
+        eth_future_price = 0
+        for ticker in tickers:
+            if ticker.get('spot_price'):
+                eth_future_price = float(ticker.get('spot_price'))
+                break
+        
+        logger.info(f"💰 ETH Future Price: ${eth_future_price}")
+        
+        # Calculate strike price range (±7%)
+        strike_lower = eth_future_price * 0.93  # -7%
+        strike_upper = eth_future_price * 1.07  # +7%
+        logger.info(f"🎯 Strike range filter: ${strike_lower:.2f} to ${strike_upper:.2f} (±7%)")
+        
         for ticker in tickers:
             try:
                 symbol = ticker.get('symbol', '')
@@ -111,12 +131,13 @@ def fetch_eth_options_data():
             logger.warning("⚠️ No valid expiry dates found")
             return pd.DataFrame()
         
-        logger.info(f"🎯 Filtering for expiries: {target_expiries}")
+        logger.info(f"🗓️ Filtering for expiries: {target_expiries}")
 
-        # Second pass: process only current and next expiry options
+        # Second pass: process only current and next expiry options within ±7% strikes
         eth_options = []
         successful_parses = 0
         failed_parses = 0
+        filtered_by_strike = 0
 
         for ticker in tickers:
             try:
@@ -133,6 +154,11 @@ def fetch_eth_options_data():
                 
                 strike = float(strike_price)
                 future_price = float(spot_price)
+                
+                # Filter by strike price range (±7%)
+                if not filter_strikes_by_percentage(future_price, strike, 7):
+                    filtered_by_strike += 1
+                    continue
                 
                 # Parse expiry date from symbol
                 symbol_parts = symbol.split('-')
@@ -180,7 +206,7 @@ def fetch_eth_options_data():
 
                 # Log first few successful parses
                 if successful_parses <= 5:
-                    logger.info(f"✅ Parsed #{successful_parses}: {symbol} (Expiry: {expiry_date})")
+                    logger.info(f"✅ Parsed #{successful_parses}: {symbol} (Strike: {strike}, Expiry: {expiry_date})")
 
             except Exception as e:
                 failed_parses += 1
@@ -188,6 +214,7 @@ def fetch_eth_options_data():
                     logger.warning(f"❌ Failed to parse {ticker.get('symbol', 'unknown')}: {e}")
 
         logger.info(f"📊 Results: {successful_parses} successful, {failed_parses} failed")
+        logger.info(f"⚡ Filtered out {filtered_by_strike} options outside ±7% strike range")
 
         if successful_parses == 0:
             logger.error("💀 No ETH options were successfully parsed!")
@@ -200,10 +227,11 @@ def fetch_eth_options_data():
         df_sorted = df_unique.sort_values(
             by=['Expiry_Date', 'Time', 'SYMBOL'], 
             ascending=[True, True, True]
-        )[74][75]
+        )
         
-        logger.info(f"📋 Final dataset: {len(df_sorted)} ETH options (current + next expiry only)")
+        logger.info(f"📋 Final dataset: {len(df_sorted)} ETH options (current + next expiry, ±7% strikes)")
         logger.info(f"📅 Expiries included: {sorted(df_sorted['Expiry_Date'].unique())}")
+        logger.info(f"🎯 Strike range: ${df_sorted['Strike'].min():.0f} to ${df_sorted['Strike'].max():.0f}")
         return df_sorted
 
     except Exception as e:
@@ -283,7 +311,7 @@ def append_to_sheets(df, worksheet):
 
 def main():
     """Main data collection function"""
-    logger.info("🚀 Starting ETH Options Data Collection - FILTERED & SORTED VERSION")
+    logger.info("🚀 Starting ETH Options Data Collection - FILTERED ±7% STRIKES VERSION")
     
     client = get_sheets_client()
     if not client:
@@ -294,7 +322,7 @@ def main():
         sheet = client.open_by_key(SPREADSHEET_ID)
         worksheet = sheet.sheet1
 
-        # Fetch ETH options data (current + next expiry only)
+        # Fetch ETH options data (current + next expiry, ±7% strikes only)
         current_df = fetch_eth_options_data()
         
         if current_df.empty:
@@ -311,13 +339,14 @@ def main():
         logger.info(f"📊 Final data summary:")
         logger.info(f"   Rows: {len(final_df)}")
         logger.info(f"   Expiries: {sorted(final_df['Expiry_Date'].unique())}")
+        logger.info(f"   Strike range: ${final_df['Strike'].min():.0f} to ${final_df['Strike'].max():.0f}")
         logger.info(f"   Sort order: Expiry Date → Time → Symbol")
         
         # Append to Google Sheets
         success = append_to_sheets(final_df, worksheet)
         
         if success:
-            logger.info(f"🎉 SUCCESS: Updated {len(final_df)} ETH options (current + next expiry)")
+            logger.info(f"🎉 SUCCESS: Updated {len(final_df)} ETH options (±7% strikes, current + next expiry)")
         else:
             logger.error("💀 FAILED: Could not update Google Sheets")
 
