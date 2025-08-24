@@ -5,9 +5,11 @@ import gspread
 from google.oauth2.service_account import Credentials
 import logging
 
+# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Configuration
 SPREADSHEET_ID = '1YVJKTo8PDKLFqp7azkY1XhqizFRxY0GZB4RvSQe7KEA'
 SERVICE_ACCOUNT_FILE = 'eth-options-key.json'
 
@@ -28,6 +30,7 @@ def get_sheets_client():
 def fetch_eth_options_data():
     """Fetch ETH options data using API fields directly (avoid symbol parsing)"""
     try:
+        # Use basic tickers endpoint
         url = "https://api.delta.exchange/v2/tickers"
         response = requests.get(url, timeout=30)
         response.raise_for_status()
@@ -38,6 +41,7 @@ def fetch_eth_options_data():
         eth_options = []
         current_time = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
 
+        # Get ETH spot price
         eth_price = 0
         for ticker in tickers:
             if ticker.get('symbol') == 'ETHUSD':
@@ -45,18 +49,22 @@ def fetch_eth_options_data():
                 break
         logger.info(f"ETH price: {eth_price}")
 
+        # Process ETH options using API fields directly
         successful_parses = 0
         failed_parses = 0
 
         for ticker in tickers:
             symbol = ticker.get('symbol', '')
 
+            # Filter for ETH options
             if 'ETH' in symbol and (symbol.startswith('C-') or symbol.startswith('P-')):
                 try:
+                    # METHOD 1: Use direct API fields (preferred)
                     strike_price = ticker.get('strike_price')
                     if strike_price:
                         strike = float(strike_price)
                     else:
+                        # METHOD 2: Parse from symbol as fallback
                         parts = symbol.split('-')
                         if len(parts) < 4:
                             failed_parses += 1
@@ -64,13 +72,16 @@ def fetch_eth_options_data():
                             continue
                         strike = float(parts[2])
 
+                    # Get expiry date from API or parse from symbol
                     expiry_str = ticker.get('expiry_date') or ticker.get('settlement_time')
                     if expiry_str:
-                        if 'T' in expiry_str:
+                        # Parse ISO date from API
+                        if 'T' in expiry_str:  # ISO format with time
                             expiry_date = datetime.datetime.fromisoformat(expiry_str.replace('Z', '+00:00')).date()
-                        else:
+                        else:  # Simple date format
                             expiry_date = datetime.datetime.strptime(expiry_str, '%Y-%m-%d').date()
                     else:
+                        # Fallback: parse from symbol
                         parts = symbol.split('-')
                         if len(parts) < 4:
                             failed_parses += 1
@@ -83,20 +94,27 @@ def fetch_eth_options_data():
                             logger.info(f"Invalid expiry format {expiry_str} in {symbol}")
                             continue
 
+                    # Determine option type
                     option_type = 'Call' if symbol.startswith('C-') else 'Put'
 
+                    # Get pricing and OI data
                     close_price = float(ticker.get('mark_price', 0) or 0)
-
-                    # FIXED: Use oi_contracts instead of oi
+                    
+                    # FIXED: Use oi_contracts instead of oi for accurate contract count
                     oi_value = ticker.get('oi_contracts', 0) or 0
-                    open_interest = int(float(str(oi_value))) if oi_value else 0
+                    try:
+                        open_interest = int(float(str(oi_value))) if oi_value else 0
+                    except (ValueError, TypeError):
+                        open_interest = 0
 
-                    # FIXED: Use API timestamp instead of system time
+                    # FIXED: Use API timestamp instead of system time for accurate timing
                     if ticker.get('time'):
                         api_time = datetime.datetime.fromisoformat(ticker['time'].replace('Z', '+00:00'))
-                        date_str = (api_time + datetime.timedelta(hours=5, minutes=30)).strftime('%Y-%m-%d')
-                        time_str = (api_time + datetime.timedelta(hours=5, minutes=30)).strftime('%H:%M:%S')
+                        ist_time = api_time + datetime.timedelta(hours=5, minutes=30)
+                        date_str = ist_time.strftime('%Y-%m-%d')
+                        time_str = ist_time.strftime('%H:%M:%S')
                     else:
+                        # Fallback to system time
                         date_str = current_time.strftime('%Y-%m-%d')
                         time_str = current_time.strftime('%H:%M:%S')
 
@@ -114,8 +132,11 @@ def fetch_eth_options_data():
 
                     eth_options.append(option_data)
                     successful_parses += 1
+
+                    # Log first few successful parses
                     if successful_parses <= 3:
                         logger.info(f"Successfully parsed #{successful_parses}: {symbol} -> Strike:{strike}, Close:{close_price}, OI:{open_interest}")
+
                 except Exception as e:
                     failed_parses += 1
                     logger.info(f"Error parsing {symbol}: {e}")
@@ -129,13 +150,19 @@ def fetch_eth_options_data():
 
         df = pd.DataFrame(eth_options)
 
-        # FIXED: Enhanced duplicate removal using SYMBOL + Date + Time
+        # FIXED: Enhanced duplicate removal using multiple columns
         df_unique = df.drop_duplicates(subset=['SYMBOL', 'Date', 'Time'], keep='last')
 
-        logger.info(f"Collected {len(df)} ETH options records")
-        logger.info(f"After removing duplicates: {len(df_unique)} unique records")
+        # NEW: Sort by Expiry Date, Time, and Symbol for organized data
+        df_unique_sorted = df_unique.sort_values(
+            by=['Expiry_Date', 'Time', 'SYMBOL'], 
+            ascending=[True, True, True]
+        )
 
-        return df_unique
+        logger.info(f"Collected {len(df)} ETH options records")
+        logger.info(f"After removing duplicates and sorting: {len(df_unique_sorted)} unique records")
+
+        return df_unique_sorted
 
     except Exception as e:
         logger.error(f"Error fetching data: {e}")
@@ -149,8 +176,10 @@ def get_previous_data(worksheet):
         all_records = worksheet.get_all_records()
         if not all_records:
             return pd.DataFrame()
+
         df = pd.DataFrame(all_records)
-        return df.tail(300)
+        return df.tail(300)  # Get last 300 records for comparison
+
     except Exception as e:
         logger.error(f"Error getting previous data: {e}")
         return pd.DataFrame()
@@ -162,9 +191,11 @@ def calculate_open_and_oi_change(current_df, previous_df):
         current_df['OI_Change'] = ''
         return current_df
 
+    # Convert to numeric for calculations
     previous_df['Close'] = pd.to_numeric(previous_df['Close'], errors='coerce')
     previous_df['OI'] = pd.to_numeric(previous_df['OI'], errors='coerce')
 
+    # Merge current with previous data
     merged = current_df.merge(
         previous_df[['SYMBOL', 'Close', 'OI']],
         on='SYMBOL',
@@ -172,12 +203,15 @@ def calculate_open_and_oi_change(current_df, previous_df):
         suffixes=('', '_prev')
     )
 
+    # Calculate Open (previous Close) and OI_Change
     merged['Open'] = merged['Close_prev'].fillna('')
     merged['OI_Change'] = (merged['OI'] - merged['OI_prev'].fillna(merged['OI'])).fillna('')
 
+    # Set empty values for new symbols
     merged.loc[merged['Close_prev'].isna(), 'Open'] = ''
     merged.loc[merged['OI_prev'].isna(), 'OI_Change'] = ''
 
+    # Keep only required columns in correct order
     columns_to_keep = ['SYMBOL', 'Date', 'Time', 'Future_Price', 'Expiry_Date',
                        'Strike', 'Option_Type', 'Close', 'OI', 'Open', 'OI_Change']
     return merged[columns_to_keep]
@@ -187,7 +221,6 @@ def append_to_sheets(df, worksheet):
     try:
         values = df.values.tolist()
         worksheet.append_rows(values, value_input_option='USER_ENTERED')
-
         logger.info(f"Appended {len(values)} rows to Google Sheets")
         return True
     except Exception as e:
@@ -196,7 +229,7 @@ def append_to_sheets(df, worksheet):
 
 def main():
     """Main data collection function"""
-    logger.info("Starting ETH options data collection - FINAL VERSION")
+    logger.info("🚀 Starting ETH options data collection - FINAL VERSION")
 
     client = get_sheets_client()
     if not client:
@@ -207,15 +240,22 @@ def main():
         sheet = client.open_by_key(SPREADSHEET_ID)
         worksheet = sheet.sheet1
 
+        # Fetch current ETH options data
         current_df = fetch_eth_options_data()
+
         if current_df.empty:
             logger.warning("No data collected")
             return
 
+        # Get previous data for comparison
         previous_df = get_previous_data(worksheet)
+
+        # Calculate Open and OI_Change fields
         final_df = calculate_open_and_oi_change(current_df, previous_df)
 
+        # Append to Google Sheets
         success = append_to_sheets(final_df, worksheet)
+
         if success:
             logger.info(f"✅ Successfully collected and updated {len(final_df)} rows")
         else:
