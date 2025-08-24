@@ -28,7 +28,7 @@ def get_sheets_client():
         return None
 
 def fetch_eth_options_data():
-    """Fetch ETH options data using only oi_contracts field"""
+    """Fetch raw ETH options data with minimal processing"""
     try:
         url = "https://api.delta.exchange/v2/tickers"
         response = requests.get(url, timeout=30)
@@ -41,9 +41,8 @@ def fetch_eth_options_data():
         successful_parses = 0
         failed_parses = 0
 
-        eth_price = 0
-
         # Get ETH spot price
+        eth_price = 0
         for ticker in tickers:
             if ticker.get('symbol') == 'ETHUSD':
                 eth_price = float(ticker.get('mark_price', 0) or 0)
@@ -55,7 +54,7 @@ def fetch_eth_options_data():
 
             if 'ETH' in symbol and (symbol.startswith('C-') or symbol.startswith('P-')):
                 try:
-                    # Strike price processing
+                    # Basic parsing - no complex logic
                     strike_price = ticker.get('strike_price')
                     if strike_price:
                         strike = float(strike_price)
@@ -66,7 +65,7 @@ def fetch_eth_options_data():
                             continue
                         strike = float(parts[2])
 
-                    # Expiry date processing
+                    # Simple expiry date processing
                     expiry_str = ticker.get('expiry_date') or ticker.get('settlement_time')
                     if expiry_str:
                         if 'T' in expiry_str:
@@ -88,31 +87,17 @@ def fetch_eth_options_data():
                     option_type = 'Call' if symbol.startswith('C-') else 'Put'
                     close_price = float(ticker.get('mark_price', 0) or 0)
 
-                    # Simplified OI handling - use only oi_contracts
-                    oi_contracts = ticker.get('oi_contracts', 0)
+                    # RAW OI - no conversion, just log what we get
+                    oi_contracts_raw = ticker.get('oi_contracts')
                     
-                    # Convert oi_contracts to integer with error handling
-                    try:
-                        if oi_contracts and str(oi_contracts).strip() not in ('0', '0.0', '', 'None', 'null'):
-                            open_interest = int(float(str(oi_contracts)))
-                        else:
-                            open_interest = 0
-                    except (ValueError, TypeError):
-                        open_interest = 0
+                    # Log raw data for first 10 entries
+                    if successful_parses < 10:
+                        logger.info(f"RAW DATA {symbol}: oi_contracts_raw='{oi_contracts_raw}' (type: {type(oi_contracts_raw)})")
 
-                    # Debug logging for first few entries
-                    if successful_parses < 5:
-                        logger.info(f"🔍 {symbol}: oi_contracts='{oi_contracts}' -> OI={open_interest}")
-
-                    # Timestamp processing - use only Delta timestamp
-                    try:
-                        api_time = datetime.datetime.fromisoformat(ticker['time'].replace('Z', '+00:00'))
-                        date_str = (api_time + datetime.timedelta(hours=5, minutes=30)).strftime('%Y-%m-%d')
-                        time_str = (api_time + datetime.timedelta(hours=5, minutes=30)).strftime('%H:%M:%S')
-                    except (KeyError, ValueError) as e:
-                        logger.error(f"Error processing timestamp for {symbol}: {e}")
-                        failed_parses += 1
-                        continue
+                    # Simple timestamp processing
+                    api_time = datetime.datetime.fromisoformat(ticker['time'].replace('Z', '+00:00'))
+                    date_str = (api_time + datetime.timedelta(hours=5, minutes=30)).strftime('%Y-%m-%d')
+                    time_str = (api_time + datetime.timedelta(hours=5, minutes=30)).strftime('%H:%M:%S')
 
                     option_data = {
                         'SYMBOL': symbol,
@@ -123,22 +108,16 @@ def fetch_eth_options_data():
                         'Strike': strike,
                         'Option_Type': option_type,
                         'Close': close_price,
-                        'OI': open_interest
+                        'OI_RAW': oi_contracts_raw  # Keep raw value as-is
                     }
 
                     eth_options.append(option_data)
                     successful_parses += 1
 
-                    # Log first few successful parses
-                    if successful_parses <= 3:
-                        logger.info(f"📊 Successfully parsed #{successful_parses}: {symbol} -> Strike:{strike}, Close:{close_price}, OI:{open_interest}")
-
                 except Exception as e:
                     failed_parses += 1
-                    logger.info(f"Error parsing {symbol}: {e}")
-                    if failed_parses <= 3:
-                        import traceback
-                        logger.info(f"Full error for {symbol}: {traceback.format_exc()}")
+                    if failed_parses <= 5:  # Log first 5 failures
+                        logger.info(f"Error parsing {symbol}: {e}")
                     continue
 
         logger.info(f"Successful parses: {successful_parses}")
@@ -146,20 +125,16 @@ def fetch_eth_options_data():
 
         df = pd.DataFrame(eth_options)
 
-        # Remove duplicates
-        df_unique = df.drop_duplicates(subset=['SYMBOL', 'Date', 'Time', 'Strike', 'Option_Type'], keep='last')
+        # Simple sorting only - no duplicate removal
+        df_sorted = df.sort_values(by=['Expiry_Date', 'Time', 'SYMBOL'], ascending=[True, True, True])
 
-        # Sort data
-        df_sorted = df_unique.sort_values(by=['Expiry_Date', 'Time', 'SYMBOL'], ascending=[True, True, True])
-
-        logger.info(f"Collected {len(df)} ETH options records")
-        logger.info(f"After removing duplicates and sorting: {len(df_sorted)} unique records")
+        logger.info(f"Total records collected: {len(df_sorted)}")
         
-        # Log OI statistics
-        non_zero_oi_count = len(df_sorted[df_sorted['OI'] > 0])
-        total_oi = df_sorted['OI'].sum()
-        logger.info(f"🎯 Records with non-zero OI: {non_zero_oi_count} out of {len(df_sorted)}")
-        logger.info(f"🎯 Total OI across all contracts: {total_oi}")
+        # Log some OI_RAW statistics to see what we have
+        if not df_sorted.empty:
+            logger.info(f"Sample OI_RAW values: {df_sorted['OI_RAW'].head(10).tolist()}")
+            unique_oi_types = df_sorted['OI_RAW'].apply(type).value_counts()
+            logger.info(f"OI_RAW data types: {unique_oi_types.to_dict()}")
 
         return df_sorted
 
@@ -168,45 +143,6 @@ def fetch_eth_options_data():
         import traceback
         traceback.print_exc()
         return pd.DataFrame()
-
-def get_previous_data(worksheet):
-    """Get previous hour's data from Google Sheets"""
-    try:
-        all_records = worksheet.get_all_records()
-        if not all_records:
-            return pd.DataFrame()
-        df = pd.DataFrame(all_records)
-        return df.tail(300)
-    except Exception as e:
-        logger.error(f"Error getting previous data: {e}")
-        return pd.DataFrame()
-
-def calculate_open_and_oi_change(current_df, previous_df):
-    """Calculate Open and OI_Change based on previous data"""
-    if previous_df.empty:
-        current_df['Open'] = ''
-        current_df['OI_Change'] = ''
-        return current_df
-
-    previous_df['Close'] = pd.to_numeric(previous_df['Close'], errors='coerce')
-    previous_df['OI'] = pd.to_numeric(previous_df['OI'], errors='coerce')
-
-    merged = current_df.merge(
-        previous_df[['SYMBOL', 'Close', 'OI']],
-        on='SYMBOL',
-        how='left',
-        suffixes=('', '_prev')
-    )
-
-    merged['Open'] = merged['Close_prev'].fillna('')
-    merged['OI_Change'] = (merged['OI'] - merged['OI_prev'].fillna(merged['OI'])).fillna('')
-
-    merged.loc[merged['Close_prev'].isna(), 'Open'] = ''
-    merged.loc[merged['OI_prev'].isna(), 'OI_Change'] = ''
-
-    columns_to_keep = ['SYMBOL', 'Date', 'Time', 'Future_Price', 'Expiry_Date',
-                       'Strike', 'Option_Type', 'Close', 'OI', 'Open', 'OI_Change']
-    return merged[columns_to_keep]
 
 def append_to_sheets(df, worksheet):
     """Append data to Google Sheets"""
@@ -220,8 +156,8 @@ def append_to_sheets(df, worksheet):
         return False
 
 def main():
-    """Main data collection function"""
-    logger.info("🚀 Starting ETH options data collection - Simplified OI Version")
+    """Main data collection function - simplified"""
+    logger.info("🚀 Starting simplified ETH options data collection - RAW DATA VERSION")
 
     client = get_sheets_client()
     if not client:
@@ -237,12 +173,10 @@ def main():
             logger.warning("No data collected")
             return
 
-        previous_df = get_previous_data(worksheet)
-        final_df = calculate_open_and_oi_change(current_df, previous_df)
-
-        success = append_to_sheets(final_df, worksheet)
+        # No Open/OI_Change calculation - just raw data
+        success = append_to_sheets(current_df, worksheet)
         if success:
-            logger.info(f"✅ Successfully collected and updated {len(final_df)} rows")
+            logger.info(f"✅ Successfully collected and saved {len(current_df)} raw records")
         else:
             logger.error("❌ Failed to update Google Sheets")
 
