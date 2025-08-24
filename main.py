@@ -4,9 +4,13 @@ import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 import logging
+import traceback
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+# Enhanced logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Configuration
@@ -14,245 +18,239 @@ SPREADSHEET_ID = '1YVJKTo8PDKLFqp7azkY1XhqizFRxY0GZB4RvSQe7KEA'
 SERVICE_ACCOUNT_FILE = 'eth-options-key.json'
 
 def get_sheets_client():
-    """Initialize Google Sheets client"""
+    """Initialize Google Sheets client with enhanced error handling"""
     try:
+        logger.info("🔑 Initializing Google Sheets client...")
         scope = [
             'https://www.googleapis.com/auth/spreadsheets',
             'https://www.googleapis.com/auth/drive'
         ]
         creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scope)
         client = gspread.authorize(creds)
+        logger.info("✅ Google Sheets client initialized successfully")
         return client
+    except FileNotFoundError:
+        logger.error("❌ Service account file 'eth-options-key.json' not found")
+        return None
     except Exception as e:
-        logger.error(f"Error initializing sheets client: {e}")
+        logger.error(f"❌ Error initializing sheets client: {e}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return None
 
-def fetch_eth_options_data():
-    """Fetch ETH options data - only the fields we need"""
+def test_sheets_connection(client):
+    """Test connection to Google Sheets"""
     try:
-        # Use tickers endpoint with ETH options filter
-        url = "https://api.delta.exchange/v2/tickers"
-        params = {
-            'contract_types': 'call_options,put_options',
-            'underlying_asset_symbols': 'ETH'
-        }
+        logger.info("🔗 Testing Google Sheets connection...")
+        sheet = client.open_by_key(SPREADSHEET_ID)
+        worksheet = sheet.sheet1
         
-        response = requests.get(url, params=params, timeout=30)
+        # Get basic info
+        all_records = worksheet.get_all_records()
+        current_rows = len(all_records)
+        
+        logger.info(f"✅ Successfully connected to sheet")
+        logger.info(f"📊 Current rows in sheet: {current_rows}")
+        return worksheet, current_rows
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to connect to Google Sheets: {e}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        return None, 0
+
+def fetch_eth_options_data():
+    """Fetch ETH options data with enhanced debugging"""
+    try:
+        logger.info("📡 Fetching ETH options data from Delta Exchange...")
+        
+        # Test basic API connectivity first
+        url = "https://api.delta.exchange/v2/tickers"
+        response = requests.get(url, timeout=30)
         response.raise_for_status()
         
         data = response.json()
         tickers = data.get('result', [])
-        logger.info(f"Total ETH options tickers fetched: {len(tickers)}")
+        logger.info(f"📈 Total tickers fetched: {len(tickers)}")
 
-        eth_options = []
-        current_time = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
-        timestamp = int(current_time.timestamp())
-
-        # Get ETH spot price
-        spot_url = "https://api.delta.exchange/v2/tickers"
-        spot_response = requests.get(spot_url, timeout=30)
-        spot_data = spot_response.json()
-        spot_tickers = spot_data.get('result', [])
-        
-        eth_spot_price = 0
-        for ticker in spot_tickers:
-            if ticker.get('symbol') == 'ETHUSD':
-                eth_spot_price = float(ticker.get('spot_price', 0) or ticker.get('mark_price', 0) or 0)
-                break
-        
-        logger.info(f"ETH spot price: {eth_spot_price}")
-
-        # Process ETH options
-        successful_parses = 0
+        # Count ETH options specifically
+        eth_options_count = 0
+        eth_calls = 0
+        eth_puts = 0
         
         for ticker in tickers:
             symbol = ticker.get('symbol', '')
             contract_type = ticker.get('contract_type', '')
             
-            # Skip if not ETH options
-            if contract_type not in ['call_options', 'put_options'] or 'ETH' not in symbol:
+            if 'ETH' in symbol and contract_type in ['call_options', 'put_options']:
+                eth_options_count += 1
+                if contract_type == 'call_options':
+                    eth_calls += 1
+                else:
+                    eth_puts += 1
+
+        logger.info(f"🎯 Found {eth_options_count} ETH options ({eth_calls} calls, {eth_puts} puts)")
+
+        if eth_options_count == 0:
+            logger.warning("⚠️ No ETH options found in API response")
+            return pd.DataFrame()
+
+        # Get ETH spot price
+        eth_spot_price = 0
+        for ticker in tickers:
+            if ticker.get('symbol') == 'ETHUSD':
+                eth_spot_price = float(ticker.get('spot_price', 0) or ticker.get('mark_price', 0) or 0)
+                break
+        
+        logger.info(f"💰 ETH spot price: ${eth_spot_price}")
+
+        # Process options data
+        eth_options = []
+        current_time = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
+        timestamp = int(current_time.timestamp())
+        
+        successful_parses = 0
+        failed_parses = 0
+
+        for ticker in tickers:
+            symbol = ticker.get('symbol', '')
+            contract_type = ticker.get('contract_type', '')
+            
+            if 'ETH' not in symbol or contract_type not in ['call_options', 'put_options']:
                 continue
             
             try:
-                # Required fields from API
+                # Get required fields
                 strike_price = ticker.get('strike_price')
                 if strike_price is None:
+                    failed_parses += 1
                     continue
                 
                 strike = float(strike_price)
                 
-                # Get expiry date
+                # Get expiry
                 expiry_str = ticker.get('expiry_date') or ticker.get('settlement_time')
                 if not expiry_str:
+                    failed_parses += 1
                     continue
                 
-                # Parse expiry date
                 if 'T' in expiry_str:
                     expiry_date = datetime.datetime.fromisoformat(expiry_str.replace('Z', '+00:00')).date()
                 else:
                     expiry_date = datetime.datetime.strptime(expiry_str, '%Y-%m-%d').date()
                 
-                # Option type
                 option_type = 'Call' if contract_type == 'call_options' else 'Put'
-                
-                # Get pricing data
                 mark_price = float(ticker.get('mark_price', 0) or 0)
                 
-                # Get OI data
-                oi_contracts = ticker.get('oi')
-                if oi_contracts is None:
+                oi_contracts = ticker.get('oi', 0)
+                try:
+                    oi_contracts = int(float(str(oi_contracts))) if oi_contracts else 0
+                except:
                     oi_contracts = 0
-                else:
-                    try:
-                        oi_contracts = int(float(str(oi_contracts)))
-                    except (ValueError, TypeError):
-                        oi_contracts = 0
 
-                # Create data matching your Google Sheets columns exactly
                 option_data = {
                     'SYMBOL': symbol,
                     'Date': current_time.strftime('%Y-%m-%d'),
-                    'Time': timestamp,  # Using timestamp as requested
-                    'Future_Price': eth_spot_price,  # ETH spot price
+                    'Time': timestamp,
+                    'Future_Price': eth_spot_price,
                     'Expiry_Date': expiry_date.strftime('%Y-%m-%d'),
                     'Strike': strike,
                     'Option_Type': option_type,
-                    'Close': mark_price,  # Using mark_price as Close
-                    'OI': oi_contracts,   # Open interest contracts
-                    'Open': '',           # Will be filled from previous data
-                    'OI_Change': ''       # Will be calculated later
+                    'Close': mark_price,
+                    'OI': oi_contracts,
+                    'Open': '',
+                    'OI_Change': ''
                 }
 
                 eth_options.append(option_data)
                 successful_parses += 1
 
-                # Log first few successful parses
-                if successful_parses <= 5:
-                    logger.info(f"Parsed #{successful_parses}: {symbol} - Strike:{strike}, Close:{mark_price}, OI:{oi_contracts}")
-
             except Exception as e:
-                logger.warning(f"Error processing {symbol}: {e}")
-                continue
+                failed_parses += 1
+                if failed_parses <= 3:  # Log first few failures
+                    logger.warning(f"Failed to parse {symbol}: {e}")
 
-        logger.info(f"Successfully parsed {successful_parses} ETH options")
+        logger.info(f"✅ Successfully parsed: {successful_parses}")
+        logger.info(f"❌ Failed to parse: {failed_parses}")
+
+        if successful_parses == 0:
+            logger.warning("⚠️ No options were successfully parsed")
+            return pd.DataFrame()
 
         df = pd.DataFrame(eth_options)
+        df_unique = df.drop_duplicates(subset=['SYMBOL'], keep='last')
         
-        if not df.empty:
-            # Remove duplicates
-            df_unique = df.drop_duplicates(subset=['SYMBOL'], keep='last')
-            logger.info(f"Final dataset: {len(df_unique)} unique ETH options")
-            return df_unique
-        else:
-            logger.warning("No ETH options data found")
-            return pd.DataFrame()
+        logger.info(f"📋 Final dataset: {len(df_unique)} unique ETH options")
+        return df_unique
 
     except Exception as e:
-        logger.error(f"Error fetching data: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"❌ Error fetching ETH options data: {e}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return pd.DataFrame()
 
-def get_previous_data(worksheet):
-    """Get previous data from Google Sheets"""
+def append_to_sheets_safe(df, worksheet):
+    """Safely append data with detailed error reporting"""
     try:
-        all_records = worksheet.get_all_records()
-        if not all_records:
-            return pd.DataFrame()
+        logger.info(f"📝 Attempting to append {len(df)} rows to Google Sheets...")
         
-        df = pd.DataFrame(all_records)
-        return df.tail(300)  # Last 300 records
+        if len(df) == 0:
+            logger.warning("⚠️ No data to append")
+            return False
         
-    except Exception as e:
-        logger.error(f"Error getting previous data: {e}")
-        return pd.DataFrame()
-
-def calculate_open_and_oi_change(current_df, previous_df):
-    """Calculate Open and OI_Change based on previous data"""
-    if previous_df.empty:
-        current_df['Open'] = ''
-        current_df['OI_Change'] = ''
-        return current_df
-
-    # Convert to numeric
-    previous_df['Close'] = pd.to_numeric(previous_df['Close'], errors='coerce')
-    previous_df['OI'] = pd.to_numeric(previous_df['OI'], errors='coerce')
-    
-    # Merge with previous data
-    merged = current_df.merge(
-        previous_df[['SYMBOL', 'Close', 'OI']],
-        on='SYMBOL',
-        how='left',
-        suffixes=('', '_prev')
-    )
-    
-    # Calculate Open (previous Close price) and OI_Change
-    merged['Open'] = merged['Close_prev'].fillna('')
-    merged['OI_Change'] = (merged['OI'] - merged['OI_prev'].fillna(merged['OI'])).fillna('')
-    
-    # Set empty for new symbols
-    merged.loc[merged['Close_prev'].isna(), 'Open'] = ''
-    merged.loc[merged['OI_prev'].isna(), 'OI_Change'] = ''
-    
-    # Keep only the required columns in the exact order of your Google Sheets
-    columns_order = ['SYMBOL', 'Date', 'Time', 'Future_Price', 'Expiry_Date', 
-                    'Strike', 'Option_Type', 'Close', 'OI', 'Open', 'OI_Change']
-    
-    return merged[columns_order]
-
-def append_to_sheets(df, worksheet):
-    """Append data to Google Sheets"""
-    try:
+        # Convert to values
         values = df.values.tolist()
-        worksheet.append_rows(values, value_input_option='USER_ENTERED')
-        logger.info(f"Appended {len(values)} rows to Google Sheets")
+        logger.info(f"🔄 Converted to {len(values)} rows for upload")
+        
+        # Show sample of data being uploaded
+        if len(values) > 0:
+            logger.info(f"📋 Sample row: {values[0][:5]}...")  # First 5 columns
+        
+        # Attempt the upload
+        result = worksheet.append_rows(values, value_input_option='USER_ENTERED')
+        
+        logger.info(f"✅ Successfully appended {len(values)} rows")
+        logger.info(f"📊 API response: {result}")
         return True
+        
     except Exception as e:
-        logger.error(f"Error appending to sheets: {e}")
+        logger.error(f"❌ Error appending to sheets: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return False
 
 def main():
-    """Main data collection function"""
-    logger.info("Starting ETH options data collection - SIMPLIFIED VERSION")
+    """Main function with comprehensive debugging"""
+    logger.info("🚀 Starting ETH Options Data Collection - DEBUG VERSION")
+    logger.info(f"🕐 Current time: {datetime.datetime.now()}")
     
+    # Step 1: Initialize Google Sheets
     client = get_sheets_client()
     if not client:
-        logger.error("Failed to initialize Google Sheets client")
+        logger.error("💀 Cannot proceed without Google Sheets client")
         return
 
-    try:
-        sheet = client.open_by_key(SPREADSHEET_ID)
-        worksheet = sheet.sheet1
+    # Step 2: Test connection
+    worksheet, current_rows = test_sheets_connection(client)
+    if not worksheet:
+        logger.error("💀 Cannot proceed without worksheet connection")
+        return
 
-        # Fetch current ETH options data
-        current_df = fetch_eth_options_data()
-        
-        if current_df.empty:
-            logger.warning("No ETH options data collected")
-            return
+    # Step 3: Fetch ETH options data
+    current_df = fetch_eth_options_data()
+    
+    if current_df.empty:
+        logger.error("💀 No ETH options data to process")
+        return
 
-        # Get previous data for Open and OI_Change calculation
-        previous_df = get_previous_data(worksheet)
-        
-        # Calculate Open and OI_Change
-        final_df = calculate_open_and_oi_change(current_df, previous_df)
-        
-        # Log final data summary
-        logger.info(f"Final dataset shape: {final_df.shape}")
-        logger.info(f"Columns: {list(final_df.columns)}")
-        
-        # Append to Google Sheets
-        success = append_to_sheets(final_df, worksheet)
-        
-        if success:
-            logger.info(f"✅ Successfully collected and updated {len(final_df)} rows")
-        else:
-            logger.error("❌ Failed to update Google Sheets")
+    # Step 4: Process and upload
+    logger.info(f"🔄 Processing {len(current_df)} options for upload...")
+    
+    success = append_to_sheets_safe(current_df, worksheet)
+    
+    if success:
+        logger.info(f"🎉 SUCCESS: Updated {len(current_df)} ETH options")
+    else:
+        logger.error("💀 FAILED: Could not update Google Sheets")
 
-    except Exception as e:
-        logger.error(f"Error in main execution: {e}")
-        import traceback
-        traceback.print_exc()
+    logger.info("🏁 ETH Options Data Collection completed")
 
 if __name__ == "__main__":
     main()
