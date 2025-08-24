@@ -1,0 +1,34 @@
+name: ETH Options Data Collection
+
+# Triggers every hour at minute 15 (to avoid GitHub peak times)
+on:
+  schedule:
+    - cron: '15 * * * *'  # Every hour at 15 minutes past the hour
+  workflow_dispatch:      # Allows manual triggering for testing
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: |
+        pip install requests pandas gspread google-auth
+    
+    - name: Create Google Sheets credentials file
+      env:
+        GOOGLE_SHEETS_KEY: ${{ secrets.GOOGLE_SHEETS_KEY }}
+      run: |
+        echo "$GOOGLE_SHEETS_KEY" > eth-options-key.json
+    
+    - name: Run ETH options data collection
+      run: |
+        python main.py
