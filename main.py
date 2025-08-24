@@ -28,7 +28,7 @@ def get_sheets_client():
         return None
 
 def fetch_eth_options_data():
-    """Fetch ETH options data with enhanced OI debugging"""
+    """Fetch ETH options data using only oi_contracts field"""
     try:
         url = "https://api.delta.exchange/v2/tickers"
         response = requests.get(url, timeout=30)
@@ -38,11 +38,10 @@ def fetch_eth_options_data():
         logger.info(f"Total tickers fetched from API: {len(tickers)}")
 
         eth_options = []
-        current_time = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
-
-        eth_price = 0
         successful_parses = 0
         failed_parses = 0
+
+        eth_price = 0
 
         # Get ETH spot price
         for ticker in tickers:
@@ -89,39 +88,31 @@ def fetch_eth_options_data():
                     option_type = 'Call' if symbol.startswith('C-') else 'Put'
                     close_price = float(ticker.get('mark_price', 0) or 0)
 
-                    # CRITICAL: Enhanced OI debugging and conversion
-                    oi_contracts = ticker.get('oi_contracts')
-                    oi = ticker.get('oi')
-
-                    # Debug first 10 entries to investigate OI field mapping
-                    if successful_parses < 10:
-                        logger.info(f"🔍 DEBUG {symbol}: oi_contracts='{oi_contracts}', oi='{oi}'")
-                        # Log ALL OI-related fields from API response
-                        oi_fields = {k: v for k, v in ticker.items() if 'oi' in k.lower()}
-                        logger.info(f"🔍 DEBUG {symbol}: All OI fields = {oi_fields}")
-
-                    # Convert oi_contracts to integer with enhanced error handling
-                    if oi_contracts and str(oi_contracts).strip() not in ('0', '0.0', ''):
-                        try:
+                    # Simplified OI handling - use only oi_contracts
+                    oi_contracts = ticker.get('oi_contracts', 0)
+                    
+                    # Convert oi_contracts to integer with error handling
+                    try:
+                        if oi_contracts and str(oi_contracts).strip() not in ('0', '0.0', '', 'None', 'null'):
                             open_interest = int(float(str(oi_contracts)))
-                            if successful_parses < 3:
-                                logger.info(f"✅ SUCCESS {symbol}: Converted oi_contracts '{oi_contracts}' -> {open_interest}")
-                        except (ValueError, TypeError) as e:
+                        else:
                             open_interest = 0
-                            logger.info(f"❌ CONVERSION ERROR {symbol}: oi_contracts '{oi_contracts}' -> {e}")
-                    else:
+                    except (ValueError, TypeError):
                         open_interest = 0
-                        if successful_parses < 5:
-                            logger.info(f"⚠️ ZERO/NULL {symbol}: oi_contracts was '{oi_contracts}'")
 
-                    # Timestamp processing
-                    if ticker.get('time'):
+                    # Debug logging for first few entries
+                    if successful_parses < 5:
+                        logger.info(f"🔍 {symbol}: oi_contracts='{oi_contracts}' -> OI={open_interest}")
+
+                    # Timestamp processing - use only Delta timestamp
+                    try:
                         api_time = datetime.datetime.fromisoformat(ticker['time'].replace('Z', '+00:00'))
                         date_str = (api_time + datetime.timedelta(hours=5, minutes=30)).strftime('%Y-%m-%d')
                         time_str = (api_time + datetime.timedelta(hours=5, minutes=30)).strftime('%H:%M:%S')
-                    else:
-                        date_str = current_time.strftime('%Y-%m-%d')
-                        time_str = current_time.strftime('%H:%M:%S')
+                    except (KeyError, ValueError) as e:
+                        logger.error(f"Error processing timestamp for {symbol}: {e}")
+                        failed_parses += 1
+                        continue
 
                     option_data = {
                         'SYMBOL': symbol,
@@ -155,7 +146,7 @@ def fetch_eth_options_data():
 
         df = pd.DataFrame(eth_options)
 
-        # Basic duplicate removal (focusing on OI fix, not duplicates)
+        # Remove duplicates
         df_unique = df.drop_duplicates(subset=['SYMBOL', 'Date', 'Time', 'Strike', 'Option_Type'], keep='last')
 
         # Sort data
@@ -164,9 +155,11 @@ def fetch_eth_options_data():
         logger.info(f"Collected {len(df)} ETH options records")
         logger.info(f"After removing duplicates and sorting: {len(df_sorted)} unique records")
         
-        # Log OI statistics to verify data quality
+        # Log OI statistics
         non_zero_oi_count = len(df_sorted[df_sorted['OI'] > 0])
-        logger.info(f"🎯 CRITICAL: Records with non-zero OI: {non_zero_oi_count} out of {len(df_sorted)}")
+        total_oi = df_sorted['OI'].sum()
+        logger.info(f"🎯 Records with non-zero OI: {non_zero_oi_count} out of {len(df_sorted)}")
+        logger.info(f"🎯 Total OI across all contracts: {total_oi}")
 
         return df_sorted
 
@@ -228,7 +221,7 @@ def append_to_sheets(df, worksheet):
 
 def main():
     """Main data collection function"""
-    logger.info("🚀 Starting ETH options data collection - OI DEBUGGING VERSION")
+    logger.info("🚀 Starting ETH options data collection - Simplified OI Version")
 
     client = get_sheets_client()
     if not client:
