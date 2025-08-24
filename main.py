@@ -5,9 +5,11 @@ import gspread
 from google.oauth2.service_account import Credentials
 import logging
 
+# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Configuration
 SPREADSHEET_ID = '1YVJKTo8PDKLFqp7azkY1XhqizFRxY0GZB4RvSQe7KEA'
 SERVICE_ACCOUNT_FILE = 'eth-options-key.json'
 
@@ -26,7 +28,7 @@ def get_sheets_client():
         return None
 
 def fetch_eth_options_data():
-    """Fetch ETH options data with enhanced duplicate removal and OI debugging"""
+    """Fetch ETH options data with enhanced OI debugging"""
     try:
         url = "https://api.delta.exchange/v2/tickers"
         response = requests.get(url, timeout=30)
@@ -38,24 +40,23 @@ def fetch_eth_options_data():
         eth_options = []
         current_time = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
 
-        # Get ETH spot price
         eth_price = 0
+        successful_parses = 0
+        failed_parses = 0
+
+        # Get ETH spot price
         for ticker in tickers:
             if ticker.get('symbol') == 'ETHUSD':
                 eth_price = float(ticker.get('mark_price', 0) or 0)
                 break
         logger.info(f"ETH price: {eth_price}")
 
-        successful_parses = 0
-        failed_parses = 0
-        debug_count = 0
-
         for ticker in tickers:
             symbol = ticker.get('symbol', '')
 
             if 'ETH' in symbol and (symbol.startswith('C-') or symbol.startswith('P-')):
                 try:
-                    # Get strike price
+                    # Strike price processing
                     strike_price = ticker.get('strike_price')
                     if strike_price:
                         strike = float(strike_price)
@@ -66,7 +67,7 @@ def fetch_eth_options_data():
                             continue
                         strike = float(parts[2])
 
-                    # Get expiry date
+                    # Expiry date processing
                     expiry_str = ticker.get('expiry_date') or ticker.get('settlement_time')
                     if expiry_str:
                         if 'T' in expiry_str:
@@ -88,30 +89,32 @@ def fetch_eth_options_data():
                     option_type = 'Call' if symbol.startswith('C-') else 'Put'
                     close_price = float(ticker.get('mark_price', 0) or 0)
 
-                    # ENHANCED OI DEBUGGING AND MAPPING
+                    # CRITICAL: Enhanced OI debugging and conversion
                     oi_contracts = ticker.get('oi_contracts')
                     oi = ticker.get('oi')
-                    
-                    # Debug first 5 entries to see actual API values
-                    if debug_count < 5:
-                        logger.info(f"DEBUG {symbol}: oi_contracts='{oi_contracts}', oi='{oi}'")
-                        debug_count += 1
-                    
-                    # Try multiple OI field sources
-                    open_interest = 0
-                    if oi_contracts and str(oi_contracts) not in ['0', '0.0', '']:
+
+                    # Debug first 10 entries to investigate OI field mapping
+                    if successful_parses < 10:
+                        logger.info(f"🔍 DEBUG {symbol}: oi_contracts='{oi_contracts}', oi='{oi}'")
+                        # Log ALL OI-related fields from API response
+                        oi_fields = {k: v for k, v in ticker.items() if 'oi' in k.lower()}
+                        logger.info(f"🔍 DEBUG {symbol}: All OI fields = {oi_fields}")
+
+                    # Convert oi_contracts to integer with enhanced error handling
+                    if oi_contracts and str(oi_contracts).strip() not in ('0', '0.0', ''):
                         try:
                             open_interest = int(float(str(oi_contracts)))
-                        except (ValueError, TypeError):
+                            if successful_parses < 3:
+                                logger.info(f"✅ SUCCESS {symbol}: Converted oi_contracts '{oi_contracts}' -> {open_interest}")
+                        except (ValueError, TypeError) as e:
                             open_interest = 0
-                    elif oi and str(oi) not in ['0', '0.0', '']:
-                        try:
-                            # Convert scaled OI back to contracts (multiply by 100)
-                            open_interest = int(float(str(oi)) * 100)
-                        except (ValueError, TypeError):
-                            open_interest = 0
+                            logger.info(f"❌ CONVERSION ERROR {symbol}: oi_contracts '{oi_contracts}' -> {e}")
+                    else:
+                        open_interest = 0
+                        if successful_parses < 5:
+                            logger.info(f"⚠️ ZERO/NULL {symbol}: oi_contracts was '{oi_contracts}'")
 
-                    # Use API timestamp
+                    # Timestamp processing
                     if ticker.get('time'):
                         api_time = datetime.datetime.fromisoformat(ticker['time'].replace('Z', '+00:00'))
                         date_str = (api_time + datetime.timedelta(hours=5, minutes=30)).strftime('%Y-%m-%d')
@@ -135,46 +138,35 @@ def fetch_eth_options_data():
                     eth_options.append(option_data)
                     successful_parses += 1
 
+                    # Log first few successful parses
                     if successful_parses <= 3:
-                        logger.info(f"SUCCESS #{successful_parses}: {symbol} -> OI:{open_interest}")
+                        logger.info(f"📊 Successfully parsed #{successful_parses}: {symbol} -> Strike:{strike}, Close:{close_price}, OI:{open_interest}")
 
                 except Exception as e:
                     failed_parses += 1
                     logger.info(f"Error parsing {symbol}: {e}")
+                    if failed_parses <= 3:
+                        import traceback
+                        logger.info(f"Full error for {symbol}: {traceback.format_exc()}")
                     continue
 
-        logger.info(f"Successful parses: {successful_parses}, Failed: {failed_parses}")
+        logger.info(f"Successful parses: {successful_parses}")
+        logger.info(f"Failed parses: {failed_parses}")
 
         df = pd.DataFrame(eth_options)
-        logger.info(f"Raw DataFrame: {len(df)} rows")
 
-        # ENHANCED DUPLICATE REMOVAL - Multiple passes
-        # Pass 1: Remove exact duplicates
-        df_step1 = df.drop_duplicates()
-        logger.info(f"After exact duplicate removal: {len(df_step1)} rows")
+        # Basic duplicate removal (focusing on OI fix, not duplicates)
+        df_unique = df.drop_duplicates(subset=['SYMBOL', 'Date', 'Time', 'Strike', 'Option_Type'], keep='last')
 
-        # Pass 2: Remove symbol-based duplicates (keep last)
-        df_step2 = df_step1.drop_duplicates(subset=['SYMBOL'], keep='last')
-        logger.info(f"After symbol duplicate removal: {len(df_step2)} rows")
+        # Sort data
+        df_sorted = df_unique.sort_values(by=['Expiry_Date', 'Time', 'SYMBOL'], ascending=[True, True, True])
 
-        # Pass 3: Remove comprehensive duplicates
-        df_unique = df_step2.drop_duplicates(
-            subset=['SYMBOL', 'Date', 'Time', 'Strike', 'Option_Type'], 
-            keep='last'
-        )
-        logger.info(f"After comprehensive duplicate removal: {len(df_unique)} rows")
-
-        # Sort the data
-        df_sorted = df_unique.sort_values(
-            by=['Expiry_Date', 'Time', 'SYMBOL'], 
-            ascending=[True, True, True]
-        )
-
-        logger.info(f"FINAL: {len(df_sorted)} unique records")
+        logger.info(f"Collected {len(df)} ETH options records")
+        logger.info(f"After removing duplicates and sorting: {len(df_sorted)} unique records")
         
-        # Log OI statistics
-        non_zero_oi = df_sorted[df_sorted['OI'] > 0]['OI'].count()
-        logger.info(f"Records with non-zero OI: {non_zero_oi} out of {len(df_sorted)}")
+        # Log OI statistics to verify data quality
+        non_zero_oi_count = len(df_sorted[df_sorted['OI'] > 0])
+        logger.info(f"🎯 CRITICAL: Records with non-zero OI: {non_zero_oi_count} out of {len(df_sorted)}")
 
         return df_sorted
 
@@ -236,7 +228,7 @@ def append_to_sheets(df, worksheet):
 
 def main():
     """Main data collection function"""
-    logger.info("🚀 Starting ETH options data collection - ENHANCED DEBUG VERSION")
+    logger.info("🚀 Starting ETH options data collection - OI DEBUGGING VERSION")
 
     client = get_sheets_client()
     if not client:
