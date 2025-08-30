@@ -1,8 +1,12 @@
 name: Cleanup old workflow runs
 on:
   schedule:
-    - cron: '0 0 * * 0'   # Weekly on Sunday at midnight
-  workflow_dispatch:      # Manual trigger option
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+permissions:
+  actions: write        # Only this workflow gets write permissions
+  contents: read        # Minimal read access
 
 jobs:
   cleanup:
@@ -13,5 +17,5 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
-          retain_days: 1            # Keep only last 7 days (1 week)
-          keep_minimum_runs: 10     # Always keep at least 10 runs
+          retain_days: 7
+          keep_minimum_runs: 10
