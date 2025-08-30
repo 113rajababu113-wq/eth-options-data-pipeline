@@ -4,13 +4,12 @@ on:
     - cron: '0 0 * * 0'
   workflow_dispatch:
 
-permissions:
-  actions: write        # Only this workflow gets write permissions
-  contents: read        # Minimal read access
-
 jobs:
   cleanup:
     runs-on: ubuntu-latest
+    permissions:               # Job-level is better for single job
+      actions: write
+      contents: read
     steps:
       - name: Delete old workflow runs
         uses: GitRML/delete-workflow-runs@main
