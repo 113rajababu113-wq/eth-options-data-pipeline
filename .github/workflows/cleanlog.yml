@@ -1,0 +1,17 @@
+name: Cleanup old workflow runs
+on:
+  schedule:
+    - cron: '0 0 * * 0'   # Weekly on Sunday at midnight
+  workflow_dispatch:      # Manual trigger option
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old workflow runs
+        uses: GitRML/delete-workflow-runs@main
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          retain_days: 7            # Keep only last 7 days (1 week)
+          keep_minimum_runs: 10     # Always keep at least 10 runs
