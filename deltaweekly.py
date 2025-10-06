@@ -412,10 +412,12 @@ def main():
         # Log final data summary
         logger.info(f"📊 Final data summary:")
         logger.info(f"   Rows: {len(final_df)}")
-        logger.info(f"   Expiries: {sorted(final_df['Expiry_Date'].unique())}")
-        logger.info(f"   W1 Expiry: {target_expiries[0] if len(target_expiries) > 0 else 'None'}")
-        logger.info(f"   W2 Expiry: {target_expiries[1] if len(target_expiries) > 1 else 'None'}")
+        expiry_list = sorted(final_df['Expiry_Date'].unique())
+        logger.info(f"   Expiries: {expiry_list}")
+        logger.info(f"   W1 Expiry: {expiry_list[0] if len(expiry_list) > 0 else 'None'}")
+        logger.info(f"   W2 Expiry: {expiry_list[1] if len(expiry_list) > 1 else 'None'}")
         logger.info(f"   Strike range: ${final_df['Strike'].min():.0f} to ${final_df['Strike'].max():.0f}")
+
 
         
         # Append to Google Sheets
@@ -435,6 +437,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
