@@ -424,7 +424,7 @@ def main():
         success = append_to_sheets(final_df, worksheet)
         
         if success:
-            expiry_count = len(target_expiries)
+            expiry_count = len(final_df['Expiry_Date'].unique())
             logger.info(f"🎉 SUCCESS: Updated {len(final_df)} ETH options ({expiry_count} expiries: W1+W2)")
         else:
             logger.error("💀 FAILED: Could not update Google Sheets")
@@ -437,6 +437,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
