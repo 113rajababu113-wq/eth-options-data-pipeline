@@ -41,35 +41,44 @@ def clean_dataframe_for_json(df):
     return df_cleaned
 
 def get_current_and_next_expiry(expiry_dates):
-    """Get current and next expiry dates from a list of expiry dates"""
+    """Get current, next, and next-to-next expiry dates (E0, E1, E2)"""
     try:
         unique_expiries = sorted(set(expiry_dates))
         current_date = datetime.date.today()
         
-        current_expiry = None
-        next_expiry = None
+        current_expiry = None        # E0
+        next_expiry = None           # E1  
+        next_to_next_expiry = None   # E2
         
         for expiry in unique_expiries:
             if expiry >= current_date:
                 if current_expiry is None:
-                    current_expiry = expiry
+                    current_expiry = expiry  # E0
                 elif next_expiry is None and expiry > current_expiry:
-                    next_expiry = expiry
-                    break
+                    next_expiry = expiry     # E1
+                elif next_to_next_expiry is None and expiry > next_expiry:
+                    next_to_next_expiry = expiry  # E2
+                    break  # We have all three, stop here
         
+        # Fallback if no current expiry found
         if current_expiry is None and unique_expiries:
             current_expiry = unique_expiries[-1]
             
+        # Build result array
         result = [current_expiry] if current_expiry else []
         if next_expiry:
             result.append(next_expiry)
+        if next_to_next_expiry:
+            result.append(next_to_next_expiry)
             
-        logger.info(f"🗓️ Current expiry: {current_expiry}, Next expiry: {next_expiry}")
+        logger.info(f"🗓️ Current expiry (E0): {current_expiry}, Next expiry (E1): {next_expiry}, Next-to-next expiry (E2): {next_to_next_expiry}")
+        logger.info(f"📊 Total expiries to fetch: {len(result)}")
         return result
         
     except Exception as e:
-        logger.error(f"Error determining current/next expiry: {e}")
+        logger.error(f"Error determining expiries: {e}")
         return []
+
 
 def filter_strikes_by_percentage(future_price, strike_price, percentage=7):
     """Check if strike is within ±percentage of future price"""
@@ -388,4 +397,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
