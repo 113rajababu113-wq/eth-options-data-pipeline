@@ -40,8 +40,8 @@ def clean_dataframe_for_json(df):
     
     return df_cleaned
 
-def get_current_and_next_friday_expiry(expiry_dates):
-    """Get both current weekly Friday expiry (W1) and next weekly Friday expiry (W2)"""
+def get_friday_expiry_with_count_rule(expiry_dates):
+    """Get Friday expiry using the count >= 2 rule"""
     try:
         unique_expiries = sorted(set(expiry_dates))
         current_date = datetime.date.today()
@@ -65,49 +65,30 @@ def get_current_and_next_friday_expiry(expiry_dates):
             logger.warning("⚠️ No Friday expiries found")
             return []
         
-        # Find current weekly expiry (W1) - first Friday with count >= 2
-        current_weekly_expiry = None
+        # Apply count >= 2 rule
         for friday_exp in friday_expiries:
+            # Count active expiries before this Friday
             expiries_before_friday = [exp for exp in active_expiries if exp < friday_exp]
             count = len(expiries_before_friday)
             
             logger.info(f"🎯 Friday {friday_exp}: {count} expiries before it {expiries_before_friday}")
             
             if count >= 2:
-                current_weekly_expiry = friday_exp
-                logger.info(f"✅ Current weekly expiry (W1): {current_weekly_expiry}")
-                break
+                logger.info(f"✅ Count ({count}) >= 2 → SELECT {friday_exp}")
+                return [friday_exp]
             else:
                 logger.info(f"❌ Count ({count}) < 2 → SKIP {friday_exp}")
         
-        # If no Friday meets the criteria, use first Friday as W1
-        if not current_weekly_expiry:
-            current_weekly_expiry = friday_expiries[0]
-            logger.warning(f"⚠️ Using fallback W1: {current_weekly_expiry}")
+        # If no Friday meets the criteria, return the first Friday as fallback
+        if friday_expiries:
+            logger.warning(f"⚠️ No Friday met count >= 2 rule, using first Friday: {friday_expiries[0]}")
+            return [friday_expiries[0]]
         
-        # Find next weekly expiry (W2) - next Friday after W1
-        next_weekly_expiry = None
-        for friday_exp in friday_expiries:
-            if friday_exp > current_weekly_expiry:
-                next_weekly_expiry = friday_exp
-                logger.info(f"✅ Next weekly expiry (W2): {next_weekly_expiry}")
-                break
-        
-        # Return both expiries
-        result_expiries = [current_weekly_expiry]
-        if next_weekly_expiry:
-            result_expiries.append(next_weekly_expiry)
-        
-        logger.info(f"🎯 Final selected expiries: {result_expiries}")
-        logger.info(f"   W1 (Current): {result_expiries[0] if len(result_expiries) > 0 else 'None'}")
-        logger.info(f"   W2 (Next):    {result_expiries[1] if len(result_expiries) > 1 else 'None'}")
-        
-        return result_expiries
+        return []
         
     except Exception as e:
-        logger.error(f"Error determining Friday expiries: {e}")
+        logger.error(f"Error determining Friday expiry: {e}")
         return []
-
 
 
 def filter_strikes_by_percentage(future_price, strike_price, percentage=25):
@@ -172,7 +153,7 @@ def fetch_eth_options_data():
                 continue
         
         # Get current and next expiry dates
-        target_expiries = get_current_and_next_friday_expiry(all_expiry_dates)
+        target_expiries = get_friday_expiry_with_count_rule(all_expiry_dates)
         if not target_expiries:
             logger.warning("⚠️ No valid expiry dates found")
             return pd.DataFrame()
@@ -409,22 +390,17 @@ def main():
         
         # Log final data summary
         logger.info(f"📊 Final data summary:")
-        logger.info(f"   Rows: {len(final_df)}")
+        logger.info(f"   Rows: {len(final_df)} (FIXED - only current data)")
         logger.info(f"   Expiries: {sorted(final_df['Expiry_Date'].unique())}")
-        logger.info(f"   W1 Expiry: {target_expiries[0] if len(target_expiries) > 0 else 'None'}")
-        logger.info(f"   W2 Expiry: {target_expiries[1] if len(target_expiries) > 1 else 'None'}")
         logger.info(f"   Strike range: ${final_df['Strike'].min():.0f} to ${final_df['Strike'].max():.0f}")
-
         
         # Append to Google Sheets
         success = append_to_sheets(final_df, worksheet)
         
         if success:
-            expiry_count = len(target_expiries)
-            logger.info(f"🎉 SUCCESS: Updated {len(final_df)} ETH options ({expiry_count} expiries: W1+W2)")
+            logger.info(f"🎉 SUCCESS: Updated {len(final_df)} ETH options (±25% strikes, Friday expiry)")
         else:
             logger.error("💀 FAILED: Could not update Google Sheets")
-
 
     except Exception as e:
         logger.error(f"Error in main execution: {e}")
@@ -433,7 +409,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 
